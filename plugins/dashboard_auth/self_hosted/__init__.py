@@ -698,6 +698,30 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 org_id = ",".join(str(g) for g in groups)
         org_id = str(org_id or "")
 
+        raw_profiles = claims.get("profiles")
+        # This provider only accepts profile authority from the verified ID
+        # token.  Do not fall back to groups, request headers, or a client
+        # supplied query parameter: omitted/malformed is deliberately deny-all.
+        profiles: tuple[str, ...] = ()
+        if isinstance(raw_profiles, list) and all(
+            isinstance(value, str) and value.strip() for value in raw_profiles
+        ):
+            try:
+                from hermes_cli import profiles as profiles_mod
+
+                profiles = tuple(
+                    sorted(
+                        {
+                            profiles_mod.normalize_profile_name(value.strip())
+                            for value in raw_profiles
+                        }
+                    )
+                )
+                for value in profiles:
+                    profiles_mod.validate_profile_name(value)
+            except ValueError:
+                profiles = ()
+
         return Session(
             user_id=user_id,
             email=email,
@@ -707,6 +731,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             expires_at=int(claims["exp"]),
             access_token=id_token,
             refresh_token=refresh_token,
+            allowed_profiles=profiles,
         )
 
     def _validate_redirect_uri(self, redirect_uri: str) -> None:

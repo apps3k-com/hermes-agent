@@ -38,6 +38,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_sso_attempt_cookie,
 )
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.profile_authorization import profile_is_allowed
 
 _log = logging.getLogger(__name__)
 
@@ -365,6 +366,10 @@ async def gated_auth_middleware(
                 status_code=503,
             )
         if bearer_session is not None:
+            if not profile_is_allowed(
+                bearer_session, request.query_params.get("profile")
+            ):
+                return JSONResponse({"detail": "Profile access denied"}, status_code=403)
             request.state.session = bearer_session
             return await call_next(request)
         # A bearer was presented but didn't verify (expired/invalid/unknown).
@@ -469,6 +474,8 @@ async def gated_auth_middleware(
             )
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
+            if not profile_is_allowed(new_session, request.query_params.get("profile")):
+                return JSONResponse({"detail": "Profile access denied"}, status_code=403)
             request.state.session = new_session
             response = await call_next(request)
             # Persist the ROTATED tokens. Portal rotates the refresh token on
@@ -516,6 +523,8 @@ async def gated_auth_middleware(
         clear_session_cookies(response, prefix=prefix_from_request(request))
         return response
 
+    if not profile_is_allowed(session, request.query_params.get("profile")):
+        return JSONResponse({"detail": "Profile access denied"}, status_code=403)
     request.state.session = session
     response = await call_next(request)
     if not provider_hint and session.provider:

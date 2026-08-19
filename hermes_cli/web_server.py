@@ -15902,7 +15902,18 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            ticket_info = consume_ticket(ticket)
+            from hermes_cli.dashboard_auth.base import Session
+            from hermes_cli.dashboard_auth.profile_authorization import profile_is_allowed
+
+            ticket_session = Session(
+                user_id=str(ticket_info["user_id"]), email="", display_name="",
+                org_id="", provider=str(ticket_info["provider"]), expires_at=0,
+                access_token="", refresh_token="",
+                allowed_profiles=ticket_info.get("allowed_profiles"),
+            )
+            if not profile_is_allowed(ticket_session, ws.query_params.get("profile")):
+                return "profile_forbidden", "ticket"
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
