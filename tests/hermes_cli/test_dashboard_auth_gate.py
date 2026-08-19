@@ -199,7 +199,7 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
         assert web_server.app.state.auth_required is True
         assert captured["kwargs"].get("host") == "0.0.0.0"
         assert captured["kwargs"].get("proxy_headers") is True
+        assert captured["kwargs"].get("forwarded_allow_ips") == "*"
     finally:
         clear_providers()
-
 
