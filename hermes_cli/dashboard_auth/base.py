@@ -23,6 +23,11 @@ class Session:
     expires_at: int  # unix seconds; the access_token's exp claim
     access_token: str
     refresh_token: str
+    # ``None`` means the provider does not make profile assertions (legacy
+    # providers retain their established behaviour). An empty tuple is an
+    # explicit, verified deny-all assertion. Self-hosted OIDC providers must
+    # use the latter when the signed token omits the profiles claim.
+    allowed_profiles: Optional[tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)

@@ -6750,10 +6750,33 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
 
 @app.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(
-    name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None, profile: Optional[str] = None
+    request: Request, name: str, body: MemoryProviderConfigUpdate,
+    surface: Optional[str] = None, profile: Optional[str] = None,
 ):
     _require_valid_memory_provider_name(name)
     values = body.values or {}
+
+    # A self-hosted OIDC login is authorized to use an assigned profile, not
+    # to rewire that profile to another workspace or peer.  Those settings
+    # are deployment-owned and are mapped from the verified profile server
+    # side.  Legacy Nous/operator workflows retain their existing config API.
+    if name == "honcho":
+        from hermes_cli.dashboard_auth.profile_authorization import (
+            honcho_peer_for_profile,
+            oidc_identity_mapping_is_mutable,
+        )
+
+        session = getattr(request.state, "session", None)
+        if not oidc_identity_mapping_is_mutable(session):
+            requested = (profile or "").strip()
+            if not requested or not honcho_peer_for_profile(requested):
+                raise HTTPException(status_code=403, detail="Profile access denied")
+            protected = {"workspace", "peerName", "aiPeer", "apiKey"}
+            if protected.intersection(values):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Honcho identity mapping is managed by the server",
+                )
 
     def _run():
         with _profile_scope(profile):
@@ -15976,7 +15999,18 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            ticket_info = consume_ticket(ticket)
+            from hermes_cli.dashboard_auth.base import Session
+            from hermes_cli.dashboard_auth.profile_authorization import profile_is_allowed
+
+            ticket_session = Session(
+                user_id=str(ticket_info["user_id"]), email="", display_name="",
+                org_id="", provider=str(ticket_info["provider"]), expires_at=0,
+                access_token="", refresh_token="",
+                allowed_profiles=ticket_info.get("allowed_profiles"),
+            )
+            if not profile_is_allowed(ticket_session, ws.query_params.get("profile")):
+                return "profile_forbidden", "ticket"
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
