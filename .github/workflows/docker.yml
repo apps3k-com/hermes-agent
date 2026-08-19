@@ -70,7 +70,10 @@ jobs:
   # protected publish job after these tests pass.
   build:
     needs: [detect]
-    if: github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.build == 'true'
+    # Forks must build and run the secret-free integration suite too.  Only
+    # publication remains restricted below, so an apps3k security fix cannot
+    # be merged without exercising the image that will be built by Coolify.
+    if: needs.detect.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
