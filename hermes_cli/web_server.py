@@ -6749,10 +6749,33 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
 
 @app.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(
-    name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None, profile: Optional[str] = None
+    request: Request, name: str, body: MemoryProviderConfigUpdate,
+    surface: Optional[str] = None, profile: Optional[str] = None,
 ):
     _require_valid_memory_provider_name(name)
     values = body.values or {}
+
+    # A self-hosted OIDC login is authorized to use an assigned profile, not
+    # to rewire that profile to another workspace or peer.  Those settings
+    # are deployment-owned and are mapped from the verified profile server
+    # side.  Legacy Nous/operator workflows retain their existing config API.
+    if name == "honcho":
+        from hermes_cli.dashboard_auth.profile_authorization import (
+            honcho_peer_for_profile,
+            oidc_identity_mapping_is_mutable,
+        )
+
+        session = getattr(request.state, "session", None)
+        if not oidc_identity_mapping_is_mutable(session):
+            requested = (profile or "").strip()
+            if not requested or not honcho_peer_for_profile(requested):
+                raise HTTPException(status_code=403, detail="Profile access denied")
+            protected = {"workspace", "peerName", "aiPeer", "apiKey"}
+            if protected.intersection(values):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Honcho identity mapping is managed by the server",
+                )
 
     def _run():
         with _profile_scope(profile):
