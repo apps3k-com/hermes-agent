@@ -220,6 +220,35 @@ def test_callback_invalid_code_returns_400(gated_app):
     assert r2.status_code == 400
 
 
+def test_parallel_oauth_callbacks_keep_their_own_pkce_verifiers(gated_app):
+    """Starting another provider/login flow must not evict the first one."""
+    # Register two independent provider instances under distinct names.  Their
+    # generated states/verifiers prove the route dispatches each callback to
+    # its own isolated PKCE cookie, rather than whichever login started last.
+    first = StubAuthProvider()
+    first.name = "first"
+    second = StubAuthProvider()
+    second.name = "second"
+    register_provider(first)
+    register_provider(second)
+
+    r_first = gated_app.get("/auth/login?provider=first", follow_redirects=False)
+    r_second = gated_app.get("/auth/login?provider=second", follow_redirects=False)
+    first_state = r_first.headers["location"].split("state=")[1]
+    second_state = r_second.headers["location"].split("state=")[1]
+
+    first_callback = gated_app.get(
+        f"/auth/callback?code=stub_code&state={first_state}",
+        follow_redirects=False,
+    )
+    second_callback = gated_app.get(
+        f"/auth/callback?code=stub_code&state={second_state}",
+        follow_redirects=False,
+    )
+    assert first_callback.status_code == 302
+    assert second_callback.status_code == 302
+
+
 # ---------------------------------------------------------------------------
 # Cookie validation
 # ---------------------------------------------------------------------------
@@ -356,5 +385,3 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 503
     assert "unreachable" in r.text.lower()
-
-

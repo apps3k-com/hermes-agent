@@ -124,6 +124,15 @@ def _prefix(request: Request) -> str:
     return prefix_from_request(request)
 
 
+def _pkce_state(payload: str) -> str:
+    """Extract the provider OAuth state from a provider PKCE payload."""
+    for segment in payload.split(";"):
+        key, separator, value = segment.partition("=")
+        if separator and key == "state":
+            return value
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Public: login page (server-rendered HTML, no SPA bundle)
 # ---------------------------------------------------------------------------
@@ -240,7 +249,7 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         pkce = f"{pkce};next={quote(safe_next, safe='')}"
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
-        prefix=_prefix(request),
+        prefix=_prefix(request), state=_pkce_state(pkce),
     )
     return resp
 
@@ -418,7 +427,7 @@ async def auth_native_authorize(
     pkce = f"{pkce};broker={broker_state}"
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
-        prefix=_prefix(request),
+        prefix=_prefix(request), state=_pkce_state(pkce),
     )
     return resp
 
@@ -431,7 +440,7 @@ async def auth_callback(
     error: str = "",
     error_description: str = "",
 ):
-    pkce_raw = read_pkce_cookie(request)
+    pkce_raw = read_pkce_cookie(request, state=state)
     if not pkce_raw:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
@@ -577,7 +586,7 @@ async def auth_callback(
         # Clear the PKCE cookie (its job is done) but set NO session cookies:
         # the desktop is not a browser session, it redeems the code for a
         # bearer token it stores itself.
-        clear_pkce_cookie(resp, prefix=_prefix(request))
+        clear_pkce_cookie(resp, prefix=_prefix(request), state=state)
         clear_sso_attempt_cookie(resp, prefix=_prefix(request))
         return resp
 
@@ -598,7 +607,7 @@ async def auth_callback(
         prefix=_prefix(request),
         provider=session.provider,
     )
-    clear_pkce_cookie(resp, prefix=_prefix(request))
+    clear_pkce_cookie(resp, prefix=_prefix(request), state=state)
     # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
     # so it never lingers to suppress a future silent attempt after logout.
     clear_sso_attempt_cookie(resp, prefix=_prefix(request))

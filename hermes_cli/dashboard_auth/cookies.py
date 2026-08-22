@@ -14,10 +14,10 @@ Three cookies in play:
                          provider that omits the refresh token (empty string)
                          degrades gracefully to access-token-only sessions —
                          the RT cookie is simply not written.
-  - hermes_session_pkce: short-lived PKCE state + CSRF nonce + provider
-                         hint (HttpOnly, lifetime = 10 minutes)
+  - hermes_session_pkce_<state-digest>: short-lived PKCE state + CSRF nonce +
+                         provider hint (HttpOnly, lifetime = 10 minutes)
 
-All three are ``SameSite=Lax`` (browser will send on cross-site GET
+All auth cookies are ``SameSite=Lax`` (browser will send on cross-site GET
 top-level navigation, which we need for the IDP redirect back to
 ``/auth/callback``) and live under the prefix's Path. ``Secure`` is set
 ONLY when the dashboard was reached over HTTPS — detected via the
@@ -56,6 +56,7 @@ Refresh-token handling:
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Optional, Tuple
 
 from fastapi import Request
@@ -143,6 +144,25 @@ def _common_attrs(*, use_https: bool, prefix: str) -> dict:
     if use_https:
         attrs["secure"] = True
     return attrs
+
+
+def _pkce_cookie_name(state: str = "") -> str:
+    """Return the PKCE cookie name for one OAuth transaction.
+
+    An OAuth ``state`` value is an unguessable, provider-generated nonce.  A
+    fixed-size digest keeps that value out of cookie names while giving every
+    pending authorization its own cookie.  This matters when a user opens two
+    providers (or retries one provider) before either callback returns: a
+    single shared PKCE cookie would otherwise replace the first verifier.
+
+    The empty-state form is retained for the native password broker, which has
+    no upstream OAuth state, and for a short in-flight compatibility window
+    during a rolling upgrade.
+    """
+    if not state:
+        return PKCE_COOKIE
+    digest = hashlib.sha256(state.encode("utf-8")).hexdigest()[:32]
+    return f"{PKCE_COOKIE}_{digest}"
 
 
 def set_session_provider_cookie(
@@ -238,23 +258,43 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
 
 
 def set_pkce_cookie(
-    response: Response, *, payload: str, use_https: bool, prefix: str = "",
+    response: Response,
+    *,
+    payload: str,
+    use_https: bool,
+    prefix: str = "",
+    state: str = "",
 ) -> None:
+    """Store an isolated PKCE transaction cookie.
+
+    ``state`` is optional only for non-OAuth native password broker flows.
+    OAuth callers must pass their provider-issued state so concurrent browser
+    logins cannot overwrite each other's verifier.
+    """
     response.set_cookie(
-        _resolved_name(PKCE_COOKIE, use_https=use_https, prefix=prefix),
+        _resolved_name(_pkce_cookie_name(state), use_https=use_https, prefix=prefix),
         payload,
         max_age=_PKCE_MAX_AGE,
         **_common_attrs(use_https=use_https, prefix=prefix),
     )
 
 
-def clear_pkce_cookie(response: Response, *, prefix: str = "") -> None:
+def clear_pkce_cookie(
+    response: Response, *, prefix: str = "", state: str = "",
+) -> None:
+    """Expire the transaction cookie and the legacy shared-cookie variant."""
     path = _cookie_path(prefix)
-    for variant in _NAME_VARIANTS:
-        response.set_cookie(
-            f"{variant}{PKCE_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
-        )
+    bare_names = (_pkce_cookie_name(state),)
+    if state:
+        # A callback begun before a rolling update only has the old shared
+        # cookie.  Clear it too after a successful state-bound callback.
+        bare_names += (PKCE_COOKIE,)
+    for bare_name in bare_names:
+        for variant in _NAME_VARIANTS:
+            response.set_cookie(
+                f"{variant}{bare_name}", "", max_age=0,
+                path=path, httponly=True, samesite="lax",
+            )
 
 
 def _read_with_fallback(
@@ -286,8 +326,12 @@ def read_session_provider(request: Request) -> Optional[str]:
     return _read_with_fallback(request, SESSION_PROVIDER_COOKIE)
 
 
-def read_pkce_cookie(request: Request) -> Optional[str]:
-    return _read_with_fallback(request, PKCE_COOKIE)
+def read_pkce_cookie(request: Request, *, state: str = "") -> Optional[str]:
+    """Read the state-bound PKCE cookie, falling back for rolling upgrades."""
+    value = _read_with_fallback(request, _pkce_cookie_name(state))
+    if value is None and state:
+        return _read_with_fallback(request, PKCE_COOKIE)
+    return value
 
 
 def set_sso_attempt_cookie(
