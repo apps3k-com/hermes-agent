@@ -38,7 +38,7 @@ def _build_app(use_https: bool = True, prefix: str = ""):
     def set_pkce():
         r = Response("ok")
         set_pkce_cookie(r, payload="provider=stub;state=s;verifier=v",
-                        use_https=use_https, prefix=prefix)
+                        use_https=use_https, prefix=prefix, state="s")
         return r
 
     @app.get("/clear")
@@ -106,6 +106,42 @@ def test_session_cookies_use_bare_name_on_http():
     assert "Secure" not in at
 
 
+def test_pkce_transactions_use_distinct_state_bound_cookie_names():
+    """Parallel OAuth starts must preserve both PKCE verifier payloads."""
+    first = Response("ok")
+    second = Response("ok")
+    set_pkce_cookie(
+        first, payload="provider=nous;state=nous-state;verifier=nous-verifier",
+        state="nous-state", use_https=True,
+    )
+    set_pkce_cookie(
+        second,
+        payload="provider=self-hosted;state=authentik-state;verifier=authentik-verifier",
+        state="authentik-state", use_https=True,
+    )
+    first_cookie = first.headers["set-cookie"].split("=", 1)[0]
+    second_cookie = second.headers["set-cookie"].split("=", 1)[0]
+    assert first_cookie != second_cookie
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/auth/callback",
+        "headers": [(
+            b"cookie",
+            (
+                f"{first_cookie}=nous-payload; "
+                f"{second_cookie}=authentik-payload"
+            ).encode(),
+        )],
+    })
+    assert read_pkce_cookie(request, state="nous-state") == "nous-payload"
+    assert (
+        read_pkce_cookie(request, state="authentik-state")
+        == "authentik-payload"
+    )
+
+
 
 
 
@@ -131,7 +167,6 @@ def test_read_session_cookies_from_request_secure_prefix():
     at, rt = read_session_cookies(req)
     assert at == "at_value"
     assert rt == "rt_value"
-
 
 
 
